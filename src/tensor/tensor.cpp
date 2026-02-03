@@ -164,27 +164,171 @@ void Tensor::debug() const {
 }
 
 bool Tensor::isContiguous() const {
-    TO_BE_IMPLEMENTED();
+    // TO_BE_IMPLEMENTED();
+    // isContiguous 的判断依据是 stride 数组是否是单调递减的
+    // 忽略点：考虑切片，也就是可能 offset 可能并不是 0 
+    int dims = ndim();
+    const auto& shapes = _meta.shape; 
+    const auto& strides = _meta.strides;
+
+    ptrdiff_t z = 1;
+
+    for (int i = dims - 1; i >= 0; i--) {
+        if (shapes[i] == 1) {
+             continue; 
+        }
+
+        if (strides[i] != z) {
+            return false;
+        }
+
+        z *= shapes[i];
+    }
+
     return true;
 }
 
 tensor_t Tensor::permute(const std::vector<size_t> &order) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    // TO_BE_IMPLEMENTED();
+    if (order.size() != this->ndim()) {
+        printf("Permute dimensions must match tensor dimensions");
+        return NULL;
+    }
+
+    TensorMeta new_meta = _meta;
+    
+    new_meta.shape.resize(order.size());
+    new_meta.strides.resize(order.size());
+
+    for (size_t i = 0; i < order.size(); ++i) {
+        // order[i] 是旧 Tensor 的哪个维度应该放到新的第 i 维
+        size_t old_dim_index = order[i];
+
+        new_meta.shape[i]   = _meta.shape[old_dim_index];
+        new_meta.strides[i] = _meta.strides[old_dim_index];
+    }
+
+    return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage, _offset));
 }
 
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    // TO_BE_IMPLEMENTED();
+    // 1.要求连续
+    if (!this->isContiguous()) {
+        printf("Error: view tensor must contiguous\n");
+        return NULL;
+    }
+
+    // 2.要求元素数量一样多
+    size_t new_numel = 1;
+    for (auto s : shape) {
+        new_numel *= s;
+    }
+    if (new_numel != this->numel()) {
+        printf("Error: view tensor must contiguous\n");
+        return NULL;
+    }
+
+    // 3.构造新的 strides 
+    std::vector<ptrdiff_t> new_strides(shape.size());
+    ptrdiff_t accumulated_stride = 1;
+    
+    // 从最后一个维度向前倒推
+    for (int i = shape.size() - 1; i >= 0; --i) {
+        new_strides[i] = accumulated_stride;
+        accumulated_stride *= shape[i];
+    }
+
+    // 4. 构造元数据
+    TensorMeta new_meta;
+    new_meta.shape = shape;
+    new_meta.strides = new_strides;
+    new_meta.dtype = _meta.dtype; // 保持数据类型不变
+
+    return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage, _offset));
 }
 
 tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    // TO_BE_IMPLEMENTED();
+    // 1. 【安全检查】
+    if (dim >= this->ndim()) {
+        printf("Tensor::slice: Dimension out of range");
+        return NULL;
+    }
+    // 检查索引边界
+    if (start >= end) {
+        printf("Tensor::slice: start must be less than end");
+        return NULL;
+    }
+    if (end > _meta.shape[dim]) {
+        printf("Tensor::slice: end index larger than dimension size");
+        return NULL;
+    }
+
+    TensorMeta new_meta = _meta;
+
+    // 1. 改变 shape， dim位置的维度变为 end - start
+    new_meta.shape[dim] = end - start;
+
+    size_t elem_size = 0;
+    // offset 不是元素数目，而是字节
+    switch (_meta.dtype) {
+        case LLAISYS_DTYPE_BYTE:
+        case LLAISYS_DTYPE_I8:
+        case LLAISYS_DTYPE_BOOL:
+        case LLAISYS_DTYPE_U8:
+            elem_size = 1;
+            break;
+
+        case LLAISYS_DTYPE_I16:
+        case LLAISYS_DTYPE_BF16:
+        case LLAISYS_DTYPE_U16:
+        case LLAISYS_DTYPE_F16:
+            elem_size = 2;
+            break;
+
+        case LLAISYS_DTYPE_I32:
+        case LLAISYS_DTYPE_U32:
+        case LLAISYS_DTYPE_F32:
+            elem_size = 4;
+            break;
+
+        case LLAISYS_DTYPE_I64:
+        case LLAISYS_DTYPE_U64:
+        case LLAISYS_DTYPE_F64:
+            elem_size = 8;
+            break;
+
+        default:
+            EXCEPTION_UNSUPPORTED_DATATYPE(_meta.dtype);
+    }
+
+    // 2. offset: 跳过 start * stride[dim] 个元素，再乘以elem_size就是跳过多少个字节
+    size_t shift_bytes = start * _meta.strides[dim] * elem_size;
+    
+    // 加上旧的 offset (支持多次连续切片)
+    size_t new_offset = _offset + shift_bytes;
+
+    return std::shared_ptr<Tensor>(new Tensor(new_meta, _storage, new_offset));
 }
 
 void Tensor::load(const void *src_) {
-    TO_BE_IMPLEMENTED();
+    // TO_BE_IMPLEMENTED();
+    if (!this->isContiguous()) {
+         // 在实际框架中，这里应该抛出异常或进行处理
+         printf("Error: Cannot load into non-contiguous tensor!\n");
+         return;
+    }
+
+    size_t total_bytes = this->numel() * this->elementSize();
+    void* dst_ptr = this->data();
+
+    if (this->deviceType() == LLAISYS_DEVICE_CPU) {
+        std::memcpy(dst_ptr, src_, total_bytes);
+    } 
+    else if (this->deviceType() == LLAISYS_DEVICE_NVIDIA) {
+        // TODO(): cudaMemcpy(dst_ptr, src_, total_bytes, cudaMemcpyHostToDevice);
+    }
 }
 
 tensor_t Tensor::contiguous() const {

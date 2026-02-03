@@ -1,0 +1,1 @@
+rm /opt/miniconda3/envs/infinitensor/lib/python3.11/site-packages/llaisys/libllaisys/libllaisys.so

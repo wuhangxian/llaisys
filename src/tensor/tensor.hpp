@@ -16,6 +16,7 @@ class Tensor {
 private:
     TensorMeta _meta;
     core::storage_t _storage;
+    // 用于clice切片，x = x[2:]
     size_t _offset;
     Tensor(TensorMeta meta, core::storage_t storage, size_t offset = 0);
 
